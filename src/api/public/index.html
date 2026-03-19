@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>股票交易监控面板</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      header {
+        padding: 16px 24px;
+        background: #111827;
+        border-bottom: 1px solid #334155;
+      }
+      main {
+        padding: 24px;
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      }
+      section {
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 16px;
+      }
+      h1, h2 {
+        margin: 0 0 12px;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #020617;
+        border-radius: 8px;
+        padding: 12px;
+      }
+      input, select, button, textarea {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 8px;
+        margin-bottom: 12px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #475569;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      button {
+        cursor: pointer;
+        background: #2563eb;
+      }
+      .row {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+      }
+      .item {
+        border-top: 1px solid #1e293b;
+        padding-top: 12px;
+        margin-top: 12px;
+      }
+      .muted {
+        color: #94a3b8;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>股票交易监控和提醒系统</h1>
+      <div class="muted">第9条提醒层已按要求跳过，当前仅展示空提醒结果。</div>
+    </header>
+    <main>
+      <section>
+        <h2>配置</h2>
+        <pre id="configView">加载中...</pre>
+      </section>
+
+      <section>
+        <h2>市场查询</h2>
+        <input id="marketSymbol" placeholder="例如 BTC/USDT 或 AAPL" />
+        <select id="marketInterval">
+          <option value="1h">1h</option>
+          <option value="4h">4h</option>
+          <option value="1d">1d</option>
+        </select>
+        <button id="loadMarket">查询市场</button>
+        <pre id="marketView">尚未查询</pre>
+      </section>
+
+      <section>
+        <h2>持仓列表</h2>
+        <div id="positionsView">加载中...</div>
+      </section>
+
+      <section>
+        <h2>新增持仓</h2>
+        <input id="positionSymbol" placeholder="symbol" />
+        <div class="row">
+          <input id="entryPrice" type="number" placeholder="entryPrice" />
+          <input id="quantity" type="number" placeholder="quantity" />
+        </div>
+        <select id="strategyType">
+          <option value="buy_breakout">buy_breakout</option>
+          <option value="sell_breakout">sell_breakout</option>
+          <option value="buy_pullback">buy_pullback</option>
+          <option value="sell_pullback">sell_pullback</option>
+        </select>
+        <input id="stopLoss" type="number" placeholder="stopLoss" />
+        <input id="takeProfit" placeholder="takeProfit，逗号分隔" />
+        <button id="addPosition">添加持仓</button>
+      </section>
+
+      <section>
+        <h2>信号历史</h2>
+        <div id="signalsView">加载中...</div>
+      </section>
+
+      <section>
+        <h2>提醒历史</h2>
+        <pre id="alertsView">加载中...</pre>
+      </section>
+    </main>
+
+    <script>
+      async function fetchJson(url, options) {
+        const res = await fetch(url, options);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Request failed');
+        }
+        return data;
+      }
+
+      async function loadConfig() {
+        const data = await fetchJson('/api/config');
+        document.getElementById('configView').textContent = JSON.stringify(data.config, null, 2);
+      }
+
+      async function loadPositions() {
+        const data = await fetchJson('/api/positions');
+        const container = document.getElementById('positionsView');
+        if (!data.positions.length) {
+          container.innerHTML = '<div class="muted">暂无持仓</div>';
+          return;
+        }
+
+        container.innerHTML = data.positions.map((position) => `
+          <div class="item">
+            <div><strong>${position.symbol}</strong> (${position.strategyType})</div>
+            <div>开仓价: ${position.entryPrice} / 数量: ${position.quantity}</div>
+            <div>止损: ${position.stopLoss} / 止盈: ${position.takeProfit.join(', ') || '-'}</div>
+            <button onclick="closePosition('${position.id}')">关闭持仓</button>
+          </div>
+        `).join('');
+      }
+
+      async function closePosition(id) {
+        await fetchJson(`/api/positions/${id}`, { method: 'DELETE' });
+        await loadPositions();
+      }
+      window.closePosition = closePosition;
+
+      async function addPosition() {
+        const payload = {
+          symbol: document.getElementById('positionSymbol').value,
+          entryPrice: Number(document.getElementById('entryPrice').value),
+          quantity: Number(document.getElementById('quantity').value),
+          strategyType: document.getElementById('strategyType').value,
+          stopLoss: Number(document.getElementById('stopLoss').value),
+          takeProfit: document.getElementById('takeProfit').value
+            .split(',')
+            .map((item) => Number(item.trim()))
+            .filter((item) => !Number.isNaN(item)),
+        };
+
+        await fetchJson('/api/positions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        await loadPositions();
+      }
+
+      async function loadSignals() {
+        const data = await fetchJson('/api/signals');
+        const container = document.getElementById('signalsView');
+        if (!data.signals.length) {
+          container.innerHTML = '<div class="muted">暂无信号</div>';
+          return;
+        }
+
+        container.innerHTML = data.signals.slice(-10).reverse().map((signal) => `
+          <div class="item">
+            <div><strong>${signal.symbol}</strong> - ${signal.type}</div>
+            <div>价格: ${signal.price}</div>
+            <div>原因: ${signal.reason}</div>
+            <div class="muted">${new Date(signal.timestamp).toLocaleString()}</div>
+          </div>
+        `).join('');
+      }
+
+      async function loadAlerts() {
+        const data = await fetchJson('/api/alerts');
+        document.getElementById('alertsView').textContent = JSON.stringify(data, null, 2);
+      }
+
+      async function loadMarket() {
+        const symbol = document.getElementById('marketSymbol').value;
+        const interval = document.getElementById('marketInterval').value;
+        const data = await fetchJson(`/api/market/${encodeURIComponent(symbol)}?interval=${encodeURIComponent(interval)}`);
+        document.getElementById('marketView').textContent = JSON.stringify(data, null, 2);
+      }
+
+      document.getElementById('addPosition').addEventListener('click', () => addPosition().catch(alert));
+      document.getElementById('loadMarket').addEventListener('click', () => loadMarket().catch(alert));
+
+      Promise.all([loadConfig(), loadPositions(), loadSignals(), loadAlerts()]).catch((error) => {
+        console.error(error);
+        alert(error.message);
+      });
+    </script>
+  </body>
+</html>
