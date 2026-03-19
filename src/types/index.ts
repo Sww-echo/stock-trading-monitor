@@ -14,6 +14,12 @@ export * from './position.js';
 // Risk types
 export * from './risk.js';
 
+// Advice types
+export * from './advice.js';
+
+// Watch types
+export * from './watch.js';
+
 // Alert types
 export * from './alert.js';
 

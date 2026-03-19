@@ -124,6 +124,12 @@
         <h2>提醒历史</h2>
         <pre id="alertsView">加载中...</pre>
       </section>
+
+      <section>
+        <h2>watch-summary</h2>
+        <button id="loadWatchSummary">一键生成 watch-summary</button>
+        <pre id="watchSummaryView">尚未生成</pre>
+      </section>
     </main>
 
     <script>
@@ -210,6 +216,11 @@
         document.getElementById('alertsView').textContent = JSON.stringify(data, null, 2);
       }
 
+      async function loadWatchSummary() {
+        const data = await fetchJson('/api/watch-summary');
+        document.getElementById('watchSummaryView').textContent = JSON.stringify(data.summary, null, 2);
+      }
+
       async function loadMarket() {
         const symbol = document.getElementById('marketSymbol').value;
         const interval = document.getElementById('marketInterval').value;
@@ -219,8 +230,9 @@
 
       document.getElementById('addPosition').addEventListener('click', () => addPosition().catch(alert));
       document.getElementById('loadMarket').addEventListener('click', () => loadMarket().catch(alert));
+      document.getElementById('loadWatchSummary').addEventListener('click', () => loadWatchSummary().catch(alert));
 
-      Promise.all([loadConfig(), loadPositions(), loadSignals(), loadAlerts()]).catch((error) => {
+      Promise.all([loadConfig(), loadPositions(), loadSignals(), loadAlerts(), loadWatchSummary()]).catch((error) => {
         console.error(error);
         alert(error.message);
       });

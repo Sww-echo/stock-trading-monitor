@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "openclaw-skill-draft-v1",
+  "skillId": "watch-summary",
+  "displayName": "Watch Summary",
+  "description": "扫描配置标的并输出交易建议与持仓提醒摘要",
+  "baseUrl": "https://your-skill-domain.com",
+  "healthCheck": {
+    "type": "http",
+    "method": "GET",
+    "path": "/health",
+    "expectStatus": 200,
+    "expectBody": {
+      "ok": true
+    }
+  },
+  "transport": {
+    "type": "http",
+    "method": "POST",
+    "path": "/api/skills/watch-summary"
+  },
+  "auth": {
+    "type": "bearer",
+    "header": "Authorization",
+    "prefix": "Bearer ",
+    "secretEnv": "WATCH_API_KEY"
+  },
+  "request": {
+    "contentType": "application/json",
+    "body": {
+      "input": {
+        "symbols": [
+          "BTC/USDT",
+          "ETH/USDT"
+        ],
+        "intervals": [
+          "1h",
+          "4h"
+        ]
+      }
+    }
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "可选，临时覆盖本次扫描标的"
+      },
+      "intervals": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "可选，临时覆盖本次扫描周期"
+      }
+    },
+    "additionalProperties": false
+  },
+  "outputContract": {
+    "ok": "boolean",
+    "skill": "watch-summary",
+    "input": {
+      "symbols": "string[]",
+      "intervals": "string[]"
+    },
+    "output": {
+      "summary": "WatchSummaryResult",
+      "agentSummary": "WatchAgentSummary"
+    }
+  },
+  "notes": [
+    "如果 OpenClaw create-skill 生成模板字段与本文件不同，请以模板字段为准，仅保留本文件的接口路径、鉴权方式与 input/output 约定。",
+    "本配置优先复用 POST /api/skills/watch-summary，不要求改动后端代码。"
+  ]
+}
