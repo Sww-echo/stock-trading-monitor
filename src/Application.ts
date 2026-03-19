@@ -19,6 +19,7 @@ export class Application {
   private monitorTimer?: NodeJS.Timeout;
   private readonly port: number;
   private readonly host: string;
+  private readonly apiKey?: string;
 
   constructor(options?: {
     configPath?: string;
@@ -27,12 +28,14 @@ export class Application {
     signalsDir?: string;
     port?: number;
     host?: string;
+    apiKey?: string;
   }) {
     this.configManager = new ConfigManager(options?.configPath ?? 'data/config.json');
     this.dataManager = new DataManager(options?.dataDir ?? 'data/klines');
     this.positionMonitor = new PositionMonitor(options?.positionsDir ?? 'data/positions');
     this.port = options?.port ?? 3000;
     this.host = options?.host ?? '0.0.0.0';
+    this.apiKey = options?.apiKey ?? process.env.WATCH_API_KEY;
 
     if (options?.signalsDir) {
       this.signalScanner = new SignalScanner(this.dataManager, 0.02, path.resolve(process.cwd(), options.signalsDir));
@@ -63,6 +66,7 @@ export class Application {
       positionMonitor: this.positionMonitor,
       signalScanner: this.signalScanner,
       configManager: this.configManager,
+      apiKey: this.apiKey,
       getConfig: () => {
         if (!this.config) {
           throw new Error('Config not loaded');

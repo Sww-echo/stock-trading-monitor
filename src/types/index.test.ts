@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MarketType, MarketState, SignalType, AlertType, TakeProfitMode } from './index.js';
+import { MarketType, MarketState, SignalType, AlertType, TakeProfitMode, AdviceAction, isActionablePositionStatus } from './index.js';
 
 describe('Core Type Definitions', () => {
   it('should export MarketType enum', () => {
@@ -29,6 +29,56 @@ describe('Core Type Definitions', () => {
     expect(AlertType.TAKE_PROFIT).toBe('take_profit');
     expect(AlertType.TREND_REVERSAL).toBe('trend_reversal');
     expect(AlertType.ERROR).toBe('error');
+  });
+
+  it('should export AdviceAction type values as string literals', () => {
+    const action: AdviceAction = 'buy';
+    expect(action).toBe('buy');
+  });
+
+  it('should export isActionablePositionStatus helper', () => {
+    const actionable = isActionablePositionStatus({
+      position: {
+        id: 'p1',
+        symbol: 'BTC/USDT',
+        entryPrice: 40000,
+        entryTime: 1710000000000,
+        quantity: 0.1,
+        strategyType: SignalType.BUY_BREAKOUT,
+        stopLoss: 39000,
+        takeProfit: [43000],
+        status: 'open',
+      },
+      currentPrice: 40500,
+      pnl: 50,
+      pnlPercent: 1.25,
+      shouldStopLoss: false,
+      shouldTakeProfit: true,
+      trendReversed: false,
+    });
+
+    const notActionable = isActionablePositionStatus({
+      position: {
+        id: 'p2',
+        symbol: 'ETH/USDT',
+        entryPrice: 3000,
+        entryTime: 1710000000000,
+        quantity: 1,
+        strategyType: SignalType.BUY_PULLBACK,
+        stopLoss: 2800,
+        takeProfit: [3300],
+        status: 'open',
+      },
+      currentPrice: 3010,
+      pnl: 10,
+      pnlPercent: 0.33,
+      shouldStopLoss: false,
+      shouldTakeProfit: false,
+      trendReversed: false,
+    });
+
+    expect(actionable).toBe(true);
+    expect(notActionable).toBe(false);
   });
 
   it('should export TakeProfitMode enum', () => {

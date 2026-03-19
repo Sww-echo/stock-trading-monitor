@@ -9,6 +9,7 @@ import { SystemConfig } from '../types/config.js';
 import { PositionMonitor } from '../monitoring/PositionMonitor.js';
 import { SignalScanner } from '../monitoring/SignalScanner.js';
 import { ConfigManager } from '../config/ConfigManager.js';
+import { WatchSummaryService } from '../services/WatchSummaryService.js';
 
 export interface ApiServerDependencies {
   dataManager: DataManager;
@@ -17,14 +18,57 @@ export interface ApiServerDependencies {
   configManager: ConfigManager;
   getConfig: () => SystemConfig;
   updateConfig: (config: SystemConfig) => Promise<SystemConfig>;
+  apiKey?: string;
+}
+
+function createWatchSummaryService(deps: ApiServerDependencies): WatchSummaryService {
+  return new WatchSummaryService({
+    dataManager: deps.dataManager,
+    signalScanner: deps.signalScanner,
+    positionMonitor: deps.positionMonitor,
+  });
+}
+
+function buildRuntimeConfig(
+  base: SystemConfig,
+  payload: Partial<Pick<SystemConfig, 'symbols' | 'intervals'>>
+): SystemConfig {
+  return {
+    ...base,
+    symbols: Array.isArray(payload.symbols) ? payload.symbols : base.symbols,
+    intervals: Array.isArray(payload.intervals) ? payload.intervals : base.intervals,
+  };
+}
+
+function requireApiKey(apiKey?: string) {
+  return (req: Request, res: Response, next: express.NextFunction) => {
+    if (!apiKey) {
+      next();
+      return;
+    }
+
+    const authHeader = req.header('authorization');
+    if (!authHeader || authHeader !== `Bearer ${apiKey}`) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    next();
+  };
 }
 
 export function createApiServer(deps: ApiServerDependencies): Express {
   const app = express();
   const macCalculator = new MACalculator();
   const stateDetector = new MarketStateDetector(deps.getConfig().consolidationThreshold);
+  const watchSummaryService = createWatchSummaryService(deps);
 
   app.use(express.json());
+  app.get('/health', (_req: Request, res: Response) => {
+    res.json({ ok: true });
+  });
+
+  app.use('/api', requireApiKey(deps.apiKey));
 
   app.get('/api/positions', (_req: Request, res: Response) => {
     res.json({ positions: deps.positionMonitor.getAllPositions() });
@@ -96,6 +140,55 @@ export function createApiServer(deps: ApiServerDependencies): Express {
       return res.json({ signals });
     } catch (error) {
       return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/watch-summary', async (_req: Request, res: Response) => {
+    try {
+      const summary = await watchSummaryService.build(deps.getConfig());
+      const agentSummary = watchSummaryService.buildAgentSummary(summary);
+      return res.json({ summary, agentSummary });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/watch-summary/run', async (req: Request, res: Response) => {
+    try {
+      const payload = (req.body ?? {}) as Partial<SystemConfig>;
+      const runtimeConfig = buildRuntimeConfig(deps.getConfig(), payload);
+      const summary = await watchSummaryService.build(runtimeConfig);
+      const agentSummary = watchSummaryService.buildAgentSummary(summary);
+      return res.json({ summary, agentSummary });
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/skills/watch-summary', async (req: Request, res: Response) => {
+    try {
+      const payload = ((req.body ?? {}) as { input?: Partial<SystemConfig> }).input ?? ((req.body ?? {}) as Partial<SystemConfig>);
+      const runtimeConfig = buildRuntimeConfig(deps.getConfig(), payload);
+      const summary = await watchSummaryService.build(runtimeConfig);
+      const agentSummary = watchSummaryService.buildAgentSummary(summary);
+
+      return res.json({
+        ok: true,
+        skill: 'watch-summary',
+        input: {
+          symbols: runtimeConfig.symbols,
+          intervals: runtimeConfig.intervals,
+        },
+        output: {
+          summary,
+          agentSummary,
+        },
+      });
+    } catch (error) {
+      return res.status(400).json({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 
