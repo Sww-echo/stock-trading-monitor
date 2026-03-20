@@ -92,13 +92,13 @@ export class PositionMonitor {
     maResult: MAResult | null = null
   ): PositionStatus {
     // 计算盈亏
-    const isLong = position.strategyType === SignalType.BUY_BREAKOUT || 
+    const isLong = position.strategyType === SignalType.BUY_BREAKOUT ||
                    position.strategyType === SignalType.BUY_PULLBACK;
-    
-    const pnl = isLong 
+
+    const pnl = isLong
       ? (currentPrice - position.entryPrice) * position.quantity
       : (position.entryPrice - currentPrice) * position.quantity;
-    
+
     const pnlPercent = isLong
       ? ((currentPrice - position.entryPrice) / position.entryPrice) * 100
       : ((position.entryPrice - currentPrice) / position.entryPrice) * 100;
@@ -108,16 +108,26 @@ export class PositionMonitor {
       ? currentPrice <= position.stopLoss
       : currentPrice >= position.stopLoss;
 
-    // 检查止盈
-    const shouldTakeProfit = position.takeProfit.some(tp => 
+    const triggeredTakeProfits = position.takeProfit.filter((tp) =>
       isLong ? currentPrice >= tp : currentPrice <= tp
     );
+    const shouldTakeProfit = triggeredTakeProfits.length > 0;
+    const nextTakeProfit = this.findNextTakeProfit(position, currentPrice, isLong);
 
     // 检查趋势反转
     let trendReversed = false;
+    let adjustedStopLoss: number | undefined;
     if (maResult) {
       trendReversed = this.detectTrendReversal(position, currentPrice, maResult);
+      adjustedStopLoss = this.calculateAdjustedStopLoss(position, currentPrice, maResult, isLong);
     }
+
+    const recommendedAction = this.determineRecommendedAction({
+      shouldStopLoss,
+      shouldTakeProfit,
+      trendReversed,
+      triggeredTakeProfits,
+    });
 
     return {
       position,
@@ -126,8 +136,72 @@ export class PositionMonitor {
       pnlPercent,
       shouldStopLoss,
       shouldTakeProfit,
-      trendReversed
+      trendReversed,
+      triggeredTakeProfits,
+      nextTakeProfit,
+      adjustedStopLoss,
+      recommendedAction,
     };
+  }
+
+  private findNextTakeProfit(position: Position, currentPrice: number, isLong: boolean): number | undefined {
+    const remainingTargets = position.takeProfit.filter((tp) =>
+      isLong ? tp > currentPrice : tp < currentPrice
+    );
+
+    if (remainingTargets.length === 0) {
+      return undefined;
+    }
+
+    return isLong
+      ? Math.min(...remainingTargets)
+      : Math.max(...remainingTargets);
+  }
+
+  private calculateAdjustedStopLoss(
+    position: Position,
+    currentPrice: number,
+    maResult: MAResult,
+    isLong: boolean
+  ): number | undefined {
+    const baseStopLoss = position.stopLoss;
+    const breakEven = position.entryPrice;
+    const ma20 = maResult.ma20;
+
+    if (isLong) {
+      if (currentPrice <= position.entryPrice) {
+        return undefined;
+      }
+
+      return Math.max(baseStopLoss, breakEven, ma20);
+    }
+
+    if (currentPrice >= position.entryPrice) {
+      return undefined;
+    }
+
+    return Math.min(baseStopLoss, breakEven, ma20);
+  }
+
+  private determineRecommendedAction(input: {
+    shouldStopLoss: boolean;
+    shouldTakeProfit: boolean;
+    trendReversed: boolean;
+    triggeredTakeProfits: number[];
+  }): 'hold' | 'reduce' | 'exit' {
+    if (input.shouldStopLoss || input.trendReversed) {
+      return 'exit';
+    }
+
+    if (input.triggeredTakeProfits.length > 1) {
+      return 'exit';
+    }
+
+    if (input.shouldTakeProfit) {
+      return 'reduce';
+    }
+
+    return 'hold';
   }
 
   /**

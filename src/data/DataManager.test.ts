@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { DataManager } from './DataManager.js';
+import { SymbolClassifier } from './SymbolClassifier.js';
 import { MarketDataProvider, MarketType, KLineData } from '../types/market.js';
 
 // Mock provider for testing
@@ -70,11 +71,11 @@ class MockStockCNProvider implements MarketDataProvider {
 class MockStockUSProvider implements MarketDataProvider {
   readonly type = MarketType.STOCK_US;
   readonly name = 'MockStockUS';
-  
+
   async fetchKLines(symbol: string, interval: string, limit: number): Promise<KLineData[]> {
     const klines: KLineData[] = [];
     const now = Date.now();
-    
+
     for (let i = 0; i < limit; i++) {
       klines.push({
         timestamp: now - (limit - i) * 3600000,
@@ -85,16 +86,43 @@ class MockStockUSProvider implements MarketDataProvider {
         volume: 50000 + i * 500,
       });
     }
-    
+
     return klines;
   }
-  
+
   async fetchLatestPrice(symbol: string): Promise<number> {
     return 180;
   }
-  
+
   isTradingTime(): boolean {
     return true;
+  }
+}
+
+class MockSymbolClassifier extends SymbolClassifier {
+  override classify(symbol: string): MarketType {
+    if (symbol === 'FORCE-US') {
+      return MarketType.STOCK_US;
+    }
+
+    return super.classify(symbol);
+  }
+}
+
+class FailingCryptoProvider implements MarketDataProvider {
+  readonly type = MarketType.CRYPTO;
+  readonly name = 'FailingCrypto';
+
+  async fetchKLines(): Promise<KLineData[]> {
+    throw new Error('fetch klines failed');
+  }
+
+  async fetchLatestPrice(): Promise<number> {
+    throw new Error('fetch latest price failed');
+  }
+
+  isTradingTime(): boolean {
+    return false;
   }
 }
 
@@ -117,31 +145,51 @@ describe('DataManager', () => {
   });
   
   describe('registerProvider', () => {
-    it('should register a crypto provider', () => {
+    it('should use injected symbol classifier', async () => {
+      const customManager = new DataManager(testDataDir, new MockSymbolClassifier());
+      customManager.registerProvider(new MockStockUSProvider());
+
+      await expect(customManager.getLatestPrice('FORCE-US')).resolves.toBe(180);
+    });
+
+    it('should register a crypto provider', async () => {
       const provider = new MockCryptoProvider();
       dataManager.registerProvider(provider);
-      
-      // Verify by trying to get data for a crypto symbol
-      expect(async () => {
-        await dataManager.getKLines('BTC/USDT', '1h', 10);
-      }).not.toThrow();
+
+      await expect(dataManager.getKLines('BTC/USDT', '1h', 10)).resolves.toHaveLength(10);
     });
-    
-    it('should register multiple providers for different market types', () => {
+
+    it('should register multiple providers for different market types', async () => {
       const cryptoProvider = new MockCryptoProvider();
       const stockCNProvider = new MockStockCNProvider();
       const stockUSProvider = new MockStockUSProvider();
-      
+
       dataManager.registerProvider(cryptoProvider);
       dataManager.registerProvider(stockCNProvider);
       dataManager.registerProvider(stockUSProvider);
-      
-      // All should work without errors
-      expect(async () => {
-        await dataManager.getKLines('BTC/USDT', '1h', 10);
-        await dataManager.getKLines('600519.SH', '1h', 10);
-        await dataManager.getKLines('AAPL', '1h', 10);
-      }).not.toThrow();
+
+      await expect(dataManager.getKLines('BTC/USDT', '1h', 10)).resolves.toHaveLength(10);
+      await expect(dataManager.getKLines('600519.SH', '1h', 10)).resolves.toHaveLength(10);
+      await expect(dataManager.getKLines('AAPL', '1h', 10)).resolves.toHaveLength(10);
+    });
+
+    it('should fallback to the next crypto provider when the first one fails', async () => {
+      dataManager.registerProvider(new FailingCryptoProvider());
+      dataManager.registerProvider(new MockCryptoProvider());
+
+      await expect(dataManager.getKLines('BTC/USDT', '1h', 10)).resolves.toHaveLength(10);
+      await expect(dataManager.getLatestPrice('BTC/USDT')).resolves.toBe(42000);
+      expect(dataManager.isSymbolTradingTime('BTC/USDT')).toBe(false);
+    });
+
+    it('should replace providers when setProviders is called', async () => {
+      dataManager.registerProvider(new MockCryptoProvider());
+      expect(await dataManager.getLatestPrice('BTC/USDT')).toBe(42000);
+
+      dataManager.setProviders([new FailingCryptoProvider()]);
+
+      await expect(dataManager.getLatestPrice('BTC/USDT'))
+        .rejects.toThrow('All providers failed for fetchLatestPrice BTC/USDT');
     });
   });
   

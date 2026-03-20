@@ -4,6 +4,7 @@ import { SignalType } from '../types/strategy.js';
 import { TakeProfitMode } from '../types/risk.js';
 import { Position } from '../types/position.js';
 import { SystemConfig } from '../types/config.js';
+import type { WatchSummaryHistoryStorage, WatchSummarySnapshot } from './WatchSummaryHistoryStorage.js';
 
 const baseConfig: SystemConfig = {
   symbols: ['BTC/USDT', 'AAPL'],
@@ -26,6 +27,20 @@ const baseConfig: SystemConfig = {
   dataRetentionDays: 30,
   updateInterval: 60,
 };
+
+class InMemoryWatchSummaryHistoryStorage implements WatchSummaryHistoryStorage {
+  private snapshots: WatchSummarySnapshot[] = [];
+
+  async save(snapshot: WatchSummarySnapshot): Promise<void> {
+    this.snapshots.push(snapshot);
+  }
+
+  async list(limit: number = 20): Promise<WatchSummarySnapshot[]> {
+    return [...this.snapshots]
+      .sort((a, b) => b.generatedAt - a.generatedAt)
+      .slice(0, limit);
+  }
+}
 
 describe('WatchSummaryService', () => {
   it('应该汇总扫描建议、跳过标的和持仓提醒', async () => {
@@ -69,6 +84,10 @@ describe('WatchSummaryService', () => {
             shouldStopLoss: false,
             shouldTakeProfit: true,
             trendReversed: false,
+            triggeredTakeProfits: [43000],
+            nextTakeProfit: undefined,
+            adjustedStopLoss: 40000,
+            recommendedAction: 'reduce',
           },
         ]),
       },
@@ -82,9 +101,15 @@ describe('WatchSummaryService', () => {
     expect(result.intervals[0].skippedSymbols).toEqual(['AAPL']);
     expect(result.intervals[0].advices).toHaveLength(1);
     expect(result.intervals[0].advices[0].action).toBe('buy');
+    expect(result.symbolSummaries).toHaveLength(1);
+    expect(result.symbolSummaries[0].symbol).toBe('BTC/USDT');
+    expect(result.symbolSummaries[0].primaryAction).toBe('buy');
+    expect(result.symbolSummaries[0].priorityScore).toBeGreaterThan(0);
     expect(result.positions.openCount).toBe(1);
     expect(result.positions.alerts).toHaveLength(1);
     expect(result.positions.alerts[0].shouldTakeProfit).toBe(true);
+    expect(result.positions.alerts[0].triggeredTakeProfits).toEqual([43000]);
+    expect(result.positions.alerts[0].recommendedAction).toBe('reduce');
     expect(result.alertReservation.enabledChannels.sound).toBe(true);
     expect(result.alertReservation.reservedTypes).toContain('take_profit');
     expect(result.errors).toEqual([]);
@@ -168,6 +193,10 @@ describe('WatchSummaryService', () => {
             shouldStopLoss: false,
             shouldTakeProfit: true,
             trendReversed: false,
+            triggeredTakeProfits: [43000],
+            nextTakeProfit: undefined,
+            adjustedStopLoss: 40000,
+            recommendedAction: 'reduce',
           },
         ]),
       },
@@ -186,16 +215,57 @@ describe('WatchSummaryService', () => {
     expect(agentSummary.counts.skippedSymbols).toBe(1);
     expect(agentSummary.topSignals).toHaveLength(2);
     expect(agentSummary.topSignals[0].symbol).toBe('BTC/USDT');
+    expect(agentSummary.topSignals[0].priorityScore).toBeGreaterThan(agentSummary.topSignals[1].priorityScore);
     expect(agentSummary.positionActions).toEqual([
       {
         positionId: 'pos-1',
         symbol: 'BTC/USDT',
-        action: 'take_profit',
+        action: 'reduce',
         currentPrice: 40500,
         pnlPercent: 1.25,
       },
     ]);
     expect(agentSummary.skippedSymbols).toEqual(['AAPL']);
+  });
+
+  it('应该按 symbol 聚合多周期建议并标记冲突', async () => {
+    const service = new WatchSummaryService({
+      dataManager: {
+        isSymbolTradingTime: vi.fn(() => true),
+        getLatestPrice: vi.fn(async () => 100),
+      },
+      signalScanner: {
+        scanSymbol: vi.fn(async (symbol: string, interval: string) => ({
+          type: interval === '4h' ? SignalType.SELL_BREAKOUT : SignalType.BUY_BREAKOUT,
+          symbol,
+          timestamp: 1710000000000,
+          price: 100,
+          stopLoss: 95,
+          takeProfit: [],
+          reason: `${symbol} ${interval} signal`,
+          confidence: interval === '4h' ? 0.7 : 0.8,
+        })),
+      },
+      positionMonitor: {
+        getAllPositions: vi.fn(() => []),
+        updatePositions: vi.fn(async () => []),
+      },
+    });
+
+    const result = await service.build({
+      ...baseConfig,
+      symbols: ['BTC/USDT'],
+      intervals: ['1h', '4h'],
+    });
+
+    expect(result.symbolSummaries).toHaveLength(1);
+    expect(result.symbolSummaries[0]).toMatchObject({
+      symbol: 'BTC/USDT',
+      hasConflict: true,
+    });
+    expect(result.symbolSummaries[0].intervals).toEqual(['1h', '4h']);
+    expect(result.symbolSummaries[0].actions).toContain('buy');
+    expect(result.symbolSummaries[0].actions).toContain('sell');
   });
 
   it('应该在存在异常时返回 warning 状态', async () => {
@@ -223,5 +293,104 @@ describe('WatchSummaryService', () => {
     const agentSummary = service.buildAgentSummary(result);
     expect(agentSummary.status).toBe('warning');
     expect(agentSummary.counts.errors).toBe(1);
+  });
+
+  it('应该在 build 后保存历史快照并支持查询', async () => {
+    const nowSpy = vi.spyOn(Date, 'now');
+    nowSpy.mockReturnValueOnce(1710000000001);
+    nowSpy.mockReturnValueOnce(1710000000002);
+
+    const historyStorage = new InMemoryWatchSummaryHistoryStorage();
+    const service = new WatchSummaryService({
+      dataManager: {
+        isSymbolTradingTime: vi.fn(() => true),
+        getLatestPrice: vi.fn(async () => 100),
+      },
+      signalScanner: {
+        scanSymbol: vi.fn(async (symbol: string, interval: string) => ({
+          type: SignalType.BUY_BREAKOUT,
+          symbol,
+          timestamp: 1710000000000,
+          price: 100,
+          stopLoss: 95,
+          takeProfit: [],
+          reason: `${symbol} ${interval} signal`,
+          confidence: 0.8,
+        })),
+      },
+      positionMonitor: {
+        getAllPositions: vi.fn(() => []),
+        updatePositions: vi.fn(async () => []),
+      },
+    }, undefined, historyStorage);
+
+    try {
+      const firstResult = await service.build({
+        ...baseConfig,
+        symbols: ['BTC/USDT'],
+        intervals: ['1h'],
+      });
+
+      const secondResult = await service.build({
+        ...baseConfig,
+        symbols: ['ETH/USDT'],
+        intervals: ['4h'],
+      });
+
+      const history = await service.listHistory();
+
+      expect(history).toHaveLength(2);
+      expect(history[0].generatedAt).toBe(secondResult.generatedAt);
+      expect(history[1].generatedAt).toBe(firstResult.generatedAt);
+      expect(history[0].symbols).toEqual(['ETH/USDT']);
+      expect(history[1].symbols).toEqual(['BTC/USDT']);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('应该支持限制历史查询条数', async () => {
+    const historyStorage = new InMemoryWatchSummaryHistoryStorage();
+    const service = new WatchSummaryService({
+      dataManager: {
+        isSymbolTradingTime: vi.fn(() => true),
+        getLatestPrice: vi.fn(async () => 100),
+      },
+      signalScanner: {
+        scanSymbol: vi.fn(async (symbol: string, interval: string) => ({
+          type: SignalType.BUY_BREAKOUT,
+          symbol,
+          timestamp: 1710000000000,
+          price: 100,
+          stopLoss: 95,
+          takeProfit: [],
+          reason: `${symbol} ${interval} signal`,
+          confidence: 0.8,
+        })),
+      },
+      positionMonitor: {
+        getAllPositions: vi.fn(() => []),
+        updatePositions: vi.fn(async () => []),
+      },
+    }, undefined, historyStorage);
+
+    await service.build({
+      ...baseConfig,
+      symbols: ['BTC/USDT'],
+    });
+    await service.build({
+      ...baseConfig,
+      symbols: ['ETH/USDT'],
+    });
+    await service.build({
+      ...baseConfig,
+      symbols: ['SOL/USDT'],
+    });
+
+    const history = await service.listHistory(2);
+
+    expect(history).toHaveLength(2);
+    expect(history[0].symbols).toEqual(['SOL/USDT']);
+    expect(history[1].symbols).toEqual(['ETH/USDT']);
   });
 });

@@ -96,6 +96,9 @@ describe('PositionMonitor', () => {
       expect(status.pnlPercent).toBe(5); // ((42000 - 40000) / 40000) * 100
       expect(status.shouldStopLoss).toBe(false);
       expect(status.shouldTakeProfit).toBe(false);
+      expect(status.triggeredTakeProfits).toEqual([]);
+      expect(status.nextTakeProfit).toBe(44000);
+      expect(status.recommendedAction).toBe('hold');
     });
 
     it('should calculate PnL correctly for short position', () => {
@@ -119,6 +122,9 @@ describe('PositionMonitor', () => {
       expect(status.pnlPercent).toBeCloseTo(4.76, 1); // ((42000 - 40000) / 42000) * 100
       expect(status.shouldStopLoss).toBe(false);
       expect(status.shouldTakeProfit).toBe(true);
+      expect(status.triggeredTakeProfits).toEqual([40000]);
+      expect(status.nextTakeProfit).toBeUndefined();
+      expect(status.recommendedAction).toBe('reduce');
     });
 
     it('should detect stop loss trigger for long position', () => {
@@ -158,6 +164,9 @@ describe('PositionMonitor', () => {
       const status = monitor.checkPosition(position, currentPrice);
 
       expect(status.shouldTakeProfit).toBe(true);
+      expect(status.triggeredTakeProfits).toEqual([45000]);
+      expect(status.nextTakeProfit).toBe(48000);
+      expect(status.recommendedAction).toBe('reduce');
       expect(status.pnl).toBeGreaterThan(0);
     });
 
@@ -187,6 +196,8 @@ describe('PositionMonitor', () => {
       const status = monitor.checkPosition(position, currentPrice, maResult);
 
       expect(status.trendReversed).toBe(true);
+      expect(status.adjustedStopLoss).toBe(42000);
+      expect(status.recommendedAction).toBe('exit');
     });
   });
 

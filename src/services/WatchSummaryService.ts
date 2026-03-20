@@ -1,4 +1,6 @@
 import { AdviceService } from './AdviceService.js';
+import { FileWatchSummaryHistoryStorage } from './FileWatchSummaryHistoryStorage.js';
+import { WatchSummaryHistoryStorage } from './WatchSummaryHistoryStorage.js';
 import { DataManager } from '../data/DataManager.js';
 import { SignalScanner } from '../monitoring/SignalScanner.js';
 import { PositionMonitor } from '../monitoring/PositionMonitor.js';
@@ -11,6 +13,7 @@ import {
   WatchAgentSummary,
   WatchAgentSummaryCounts,
   WatchAgentPositionAction,
+  WatchSymbolSummary,
   isActionablePositionStatus,
 } from '../types/watch.js';
 import { AlertType } from '../types/alert.js';
@@ -24,12 +27,15 @@ export interface WatchSummaryDependencies {
 
 export class WatchSummaryService {
   private readonly adviceService: AdviceService;
+  private readonly historyStorage: WatchSummaryHistoryStorage;
 
   constructor(
     private readonly deps: WatchSummaryDependencies,
-    adviceService?: AdviceService
+    adviceService?: AdviceService,
+    historyStorage: WatchSummaryHistoryStorage = new FileWatchSummaryHistoryStorage()
   ) {
     this.adviceService = adviceService ?? new AdviceService();
+    this.historyStorage = historyStorage;
   }
 
   async build(config: SystemConfig): Promise<WatchSummaryResult> {
@@ -98,12 +104,18 @@ export class WatchSummaryService {
         shouldStopLoss: status.shouldStopLoss,
         shouldTakeProfit: status.shouldTakeProfit,
         trendReversed: status.trendReversed,
+        triggeredTakeProfits: status.triggeredTakeProfits,
+        nextTakeProfit: status.nextTakeProfit,
+        adjustedStopLoss: status.adjustedStopLoss,
+        recommendedAction: status.recommendedAction,
       }));
 
-    return {
+    const symbolSummaries = this.buildSymbolSummaries(intervals);
+    const result: WatchSummaryResult = {
       generatedAt: Date.now(),
       symbols: config.symbols,
       intervals,
+      symbolSummaries,
       positions: {
         openCount: this.deps.positionMonitor.getAllPositions().length,
         alerts: positionAlerts,
@@ -124,6 +136,18 @@ export class WatchSummaryService {
       },
       errors,
     };
+
+    await this.historyStorage.save({
+      generatedAt: result.generatedAt,
+      summary: result,
+    });
+
+    return result;
+  }
+
+  async listHistory(limit: number = 20): Promise<WatchSummaryResult[]> {
+    const snapshots = await this.historyStorage.list(limit);
+    return snapshots.map((snapshot) => snapshot.summary);
   }
 
   buildAgentSummary(summary: WatchSummaryResult): WatchAgentSummary {
@@ -143,7 +167,7 @@ export class WatchSummaryService {
     const headline = `发现 ${counts.buy + counts.sell + counts.reduce} 个交易建议，${counts.positionAlerts} 个持仓提醒，${counts.errors} 个异常`;
 
     const topSignals = [...advices]
-      .sort((a, b) => b.confidence - a.confidence)
+      .sort((a, b) => this.calculatePriorityScore(b) - this.calculatePriorityScore(a))
       .slice(0, 5)
       .map((advice) => ({
         symbol: advice.symbol,
@@ -151,6 +175,7 @@ export class WatchSummaryService {
         action: advice.action,
         adviceLevel: advice.adviceLevel,
         confidence: advice.confidence,
+        priorityScore: this.calculatePriorityScore(advice),
         reason: advice.reason,
       }));
 
@@ -174,6 +199,80 @@ export class WatchSummaryService {
       skippedSymbols,
       nextHint,
     };
+  }
+
+  private buildSymbolSummaries(intervals: WatchIntervalSummary[]): WatchSymbolSummary[] {
+    const grouped = new Map<string, TradingAdvice[]>();
+
+    for (const interval of intervals) {
+      for (const advice of interval.advices) {
+        const advices = grouped.get(advice.symbol) ?? [];
+        advices.push(advice);
+        grouped.set(advice.symbol, advices);
+      }
+    }
+
+    return Array.from(grouped.entries())
+      .map(([symbol, advices]) => {
+        const actions = advices.map((advice) => advice.action);
+        const intervals = advices.map((advice) => advice.interval);
+        const adviceLevels = advices.map((advice) => advice.adviceLevel);
+        const priorityScore = Math.max(...advices.map((advice) => this.calculatePriorityScore(advice)));
+        const maxConfidence = Math.max(...advices.map((advice) => advice.confidence));
+        const reasons = advices.map((advice) => advice.reason);
+        const uniqueActionCount = new Set(actions).size;
+
+        const primaryAdvice = [...advices].sort(
+          (a, b) => this.calculatePriorityScore(b) - this.calculatePriorityScore(a)
+        )[0];
+
+        return {
+          symbol,
+          intervals: Array.from(new Set(intervals)),
+          actions: Array.from(new Set(actions)),
+          adviceLevels: Array.from(new Set(adviceLevels)),
+          maxConfidence,
+          priorityScore,
+          primaryAction: primaryAdvice.action,
+          hasConflict: uniqueActionCount > 1,
+          reasons,
+        };
+      })
+      .sort((a, b) => b.priorityScore - a.priorityScore);
+  }
+
+  private calculatePriorityScore(advice: TradingAdvice): number {
+    const actionScoreMap: Record<TradingAdvice['action'], number> = {
+      buy: 100,
+      sell: 95,
+      reduce: 80,
+      hold: 50,
+      watch: 40,
+    };
+
+    const adviceLevelScoreMap: Record<TradingAdvice['adviceLevel'], number> = {
+      strong: 20,
+      normal: 10,
+      weak: 0,
+    };
+
+    const intervalWeightMap: Record<string, number> = {
+      '1m': 1,
+      '5m': 2,
+      '15m': 3,
+      '30m': 4,
+      '1h': 5,
+      '4h': 8,
+      '1d': 13,
+      '1w': 21,
+    };
+
+    const confidenceScore = Math.round(advice.confidence * 100);
+    const actionScore = actionScoreMap[advice.action] ?? 0;
+    const adviceLevelScore = adviceLevelScoreMap[advice.adviceLevel] ?? 0;
+    const intervalScore = intervalWeightMap[advice.interval] ?? 0;
+
+    return actionScore + adviceLevelScore + intervalScore + confidenceScore;
   }
 
   private countActions(advices: TradingAdvice[], summary: WatchSummaryResult): WatchAgentSummaryCounts {
@@ -218,16 +317,7 @@ export class WatchSummaryService {
           currentPrice: alert.currentPrice,
           pnlPercent: alert.pnlPercent,
         });
-      }
-
-      if (alert.shouldTakeProfit) {
-        actions.push({
-          positionId: alert.positionId,
-          symbol: alert.symbol,
-          action: 'take_profit',
-          currentPrice: alert.currentPrice,
-          pnlPercent: alert.pnlPercent,
-        });
+        continue;
       }
 
       if (alert.trendReversed) {
@@ -238,7 +328,49 @@ export class WatchSummaryService {
           currentPrice: alert.currentPrice,
           pnlPercent: alert.pnlPercent,
         });
+        continue;
       }
+
+      if (alert.recommendedAction === 'exit') {
+        actions.push({
+          positionId: alert.positionId,
+          symbol: alert.symbol,
+          action: 'exit',
+          currentPrice: alert.currentPrice,
+          pnlPercent: alert.pnlPercent,
+        });
+        continue;
+      }
+
+      if (alert.recommendedAction === 'reduce') {
+        actions.push({
+          positionId: alert.positionId,
+          symbol: alert.symbol,
+          action: 'reduce',
+          currentPrice: alert.currentPrice,
+          pnlPercent: alert.pnlPercent,
+        });
+        continue;
+      }
+
+      if (alert.shouldTakeProfit) {
+        actions.push({
+          positionId: alert.positionId,
+          symbol: alert.symbol,
+          action: 'take_profit',
+          currentPrice: alert.currentPrice,
+          pnlPercent: alert.pnlPercent,
+        });
+        continue;
+      }
+
+      actions.push({
+        positionId: alert.positionId,
+        symbol: alert.symbol,
+        action: 'hold',
+        currentPrice: alert.currentPrice,
+        pnlPercent: alert.pnlPercent,
+      });
     }
 
     return actions;

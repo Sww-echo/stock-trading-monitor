@@ -44,7 +44,7 @@ export class Application {
 
   async initialize(): Promise<void> {
     this.config = await this.configManager.load();
-    this.registerProviders(this.config);
+    this.configureProviders(this.config);
     await this.positionMonitor.initialize();
 
     if (!this.signalScanner) {
@@ -79,7 +79,7 @@ export class Application {
         }
         await this.configManager.save(nextConfig);
         this.config = nextConfig;
-        this.registerProviders(nextConfig);
+        this.configureProviders(nextConfig);
         this.signalScanner?.stopScanning();
         this.signalScanner = new SignalScanner(
           this.dataManager,
@@ -125,22 +125,28 @@ export class Application {
     }
   }
 
-  private registerProviders(config: SystemConfig): void {
+  private configureProviders(config: SystemConfig): void {
+    const providers: Array<
+      BinanceProvider | OKXProvider | TushareProvider | YahooFinanceProvider
+    > = [];
+
     if (config.providers.binance?.enabled) {
-      this.dataManager.registerProvider(new BinanceProvider());
+      providers.push(new BinanceProvider());
     }
 
     if (config.providers.okx?.enabled) {
-      this.dataManager.registerProvider(new OKXProvider());
+      providers.push(new OKXProvider());
     }
 
     if (config.providers.tushare?.enabled && config.providers.tushare.apiToken) {
-      this.dataManager.registerProvider(new TushareProvider(config.providers.tushare.apiToken));
+      providers.push(new TushareProvider(config.providers.tushare.apiToken));
     }
 
     if (config.providers.yahooFinance?.enabled) {
-      this.dataManager.registerProvider(new YahooFinanceProvider());
+      providers.push(new YahooFinanceProvider());
     }
+
+    this.dataManager.setProviders(providers);
   }
 
   private async runMonitoringCycle(): Promise<void> {

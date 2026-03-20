@@ -26,4 +26,8 @@ export interface PositionStatus {
   shouldStopLoss: boolean;
   shouldTakeProfit: boolean;
   trendReversed: boolean;
+  triggeredTakeProfits: number[];
+  nextTakeProfit?: number;
+  adjustedStopLoss?: number;
+  recommendedAction: 'hold' | 'reduce' | 'exit';
 }

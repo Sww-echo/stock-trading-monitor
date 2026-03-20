@@ -26,6 +26,10 @@ export interface WatchPositionAlert {
   shouldStopLoss: boolean;
   shouldTakeProfit: boolean;
   trendReversed: boolean;
+  triggeredTakeProfits: number[];
+  nextTakeProfit?: number;
+  adjustedStopLoss?: number;
+  recommendedAction: 'hold' | 'reduce' | 'exit';
 }
 
 export interface WatchAlertReservation {
@@ -37,10 +41,23 @@ export interface WatchAlertReservation {
   reservedTypes: AlertType[];
 }
 
+export interface WatchSymbolSummary {
+  symbol: string;
+  intervals: string[];
+  actions: AdviceAction[];
+  adviceLevels: AdviceLevel[];
+  maxConfidence: number;
+  priorityScore: number;
+  primaryAction: AdviceAction;
+  hasConflict: boolean;
+  reasons: string[];
+}
+
 export interface WatchSummaryResult {
   generatedAt: number;
   symbols: string[];
   intervals: WatchIntervalSummary[];
+  symbolSummaries: WatchSymbolSummary[];
   positions: {
     openCount: number;
     alerts: WatchPositionAlert[];
@@ -68,10 +85,11 @@ export interface WatchAgentTopSignal {
   action: AdviceAction;
   adviceLevel: AdviceLevel;
   confidence: number;
+  priorityScore: number;
   reason: string;
 }
 
-export type WatchAgentPositionActionType = 'stop_loss' | 'take_profit' | 'trend_reversal';
+export type WatchAgentPositionActionType = 'stop_loss' | 'take_profit' | 'trend_reversal' | 'hold' | 'reduce' | 'exit';
 
 export interface WatchAgentPositionAction {
   positionId: string;
@@ -92,5 +110,5 @@ export interface WatchAgentSummary {
 }
 
 export function isActionablePositionStatus(status: PositionStatus): boolean {
-  return status.shouldStopLoss || status.shouldTakeProfit || status.trendReversed;
+  return status.shouldStopLoss || status.shouldTakeProfit || status.trendReversed || status.recommendedAction !== 'hold';
 }

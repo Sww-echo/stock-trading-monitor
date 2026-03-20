@@ -153,6 +153,18 @@ export function createApiServer(deps: ApiServerDependencies): Express {
     }
   });
 
+  app.get('/api/watch-summary/history', async (req: Request, res: Response) => {
+    try {
+      const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      const history = await watchSummaryService.listHistory(
+        Number.isFinite(limit) && limit && limit > 0 ? limit : undefined
+      );
+      return res.json({ history });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post('/api/watch-summary/run', async (req: Request, res: Response) => {
     try {
       const payload = (req.body ?? {}) as Partial<SystemConfig>;

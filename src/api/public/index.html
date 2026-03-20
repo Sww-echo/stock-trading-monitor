@@ -217,8 +217,16 @@
       }
 
       async function loadWatchSummary() {
-        const data = await fetchJson('/api/watch-summary');
-        document.getElementById('watchSummaryView').textContent = JSON.stringify(data.summary, null, 2);
+        const [summaryData, historyData] = await Promise.all([
+          fetchJson('/api/watch-summary'),
+          fetchJson('/api/watch-summary/history?limit=5'),
+        ]);
+
+        document.getElementById('watchSummaryView').textContent = JSON.stringify({
+          summary: summaryData.summary,
+          agentSummary: summaryData.agentSummary,
+          history: historyData.history,
+        }, null, 2);
       }
 
       async function loadMarket() {
