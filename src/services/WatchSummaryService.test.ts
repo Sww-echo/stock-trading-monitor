@@ -3,6 +3,7 @@ import { WatchSummaryService } from './WatchSummaryService.js';
 import { SignalType } from '../types/strategy.js';
 import { TakeProfitMode } from '../types/risk.js';
 import { Position } from '../types/position.js';
+import { MarketChartAnalysis } from '../types/chart.js';
 import { SystemConfig } from '../types/config.js';
 import type { WatchSummaryHistoryStorage, WatchSummarySnapshot } from './WatchSummaryHistoryStorage.js';
 
@@ -40,6 +41,48 @@ class InMemoryWatchSummaryHistoryStorage implements WatchSummaryHistoryStorage {
       .sort((a, b) => b.generatedAt - a.generatedAt)
       .slice(0, limit);
   }
+}
+
+function createChartAnalysis(symbol: string, interval: string): MarketChartAnalysis {
+  return {
+    symbol,
+    interval,
+    limit: 180,
+    consolidationThreshold: 0.02,
+    klines: [],
+    movingAverages: [],
+    density: [],
+    zones: [
+      {
+        kind: 'consolidation',
+        startTimestamp: 1710000000000,
+        endTimestamp: 1710003600000,
+        upperBound: 42000,
+        lowerBound: 41000,
+        widthPercent: 0.02,
+      },
+    ],
+    signals: [
+      {
+        type: SignalType.BUY_BREAKOUT,
+        timestamp: 1710000000000,
+        price: 42000,
+        stopLoss: 41000,
+        confidence: 0.82,
+        reason: `${symbol} ${interval} breakout`,
+      },
+    ],
+    summary: {
+      latestPrice: 42000,
+      latestTimestamp: 1710000000000,
+      latestDensity: null,
+      latestSignal: null,
+      marketBias: 'bullish',
+      bandUpper: 42000,
+      bandLower: 41000,
+      analysisNotes: [`${symbol} ${interval} chart note`],
+    },
+  };
 }
 
 describe('WatchSummaryService', () => {
@@ -90,6 +133,10 @@ describe('WatchSummaryService', () => {
             recommendedAction: 'reduce',
           },
         ]),
+      },
+      chartService: {
+        buildAnalysis: vi.fn(async (symbol: string, interval: string) => createChartAnalysis(symbol, interval)),
+        renderSvg: vi.fn(() => '<svg>chart</svg>'),
       },
     });
 
@@ -200,13 +247,19 @@ describe('WatchSummaryService', () => {
           },
         ]),
       },
+      chartService: {
+        buildAnalysis: vi.fn(async (symbol: string, interval: string) => createChartAnalysis(symbol, interval)),
+        renderSvg: vi.fn(() => '<svg>chart</svg>'),
+      },
     });
 
     const result = await service.build({
       ...baseConfig,
       symbols: ['BTC/USDT', 'ETH/USDT', 'AAPL'],
     });
-    const agentSummary = service.buildAgentSummary(result);
+    const agentSummary = await service.buildAgentSummary(result, {
+      consolidationThreshold: baseConfig.consolidationThreshold,
+    });
 
     expect(agentSummary.status).toBe('attention');
     expect(agentSummary.counts.buy).toBe(2);
@@ -226,6 +279,10 @@ describe('WatchSummaryService', () => {
       },
     ]);
     expect(agentSummary.skippedSymbols).toEqual(['AAPL']);
+    expect(agentSummary.topSignalCharts).toHaveLength(2);
+    expect(agentSummary.topSignalCharts[0].symbol).toBe('BTC/USDT');
+    expect(agentSummary.topSignalCharts[0].chart.mimeType).toBe('image/svg+xml');
+    expect(agentSummary.topSignalCharts[0].chart.svg).toContain('<svg>');
   });
 
   it('应该按 symbol 聚合多周期建议并标记冲突', async () => {
@@ -290,9 +347,10 @@ describe('WatchSummaryService', () => {
       symbols: ['BTC/USDT'],
     });
 
-    const agentSummary = service.buildAgentSummary(result);
+    const agentSummary = await service.buildAgentSummary(result);
     expect(agentSummary.status).toBe('warning');
     expect(agentSummary.counts.errors).toBe(1);
+    expect(agentSummary.topSignalCharts).toEqual([]);
   });
 
   it('应该在 build 后保存历史快照并支持查询', async () => {

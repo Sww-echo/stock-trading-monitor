@@ -1,5 +1,6 @@
 import express, { Express, Request, Response } from 'express';
 import path from 'path';
+import process from 'node:process';
 import { DataManager } from '../data/DataManager.js';
 import { MACalculator } from '../strategy/MACalculator.js';
 import { MarketStateDetector } from '../strategy/MarketStateDetector.js';
@@ -10,6 +11,7 @@ import { PositionMonitor } from '../monitoring/PositionMonitor.js';
 import { SignalScanner } from '../monitoring/SignalScanner.js';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { WatchSummaryService } from '../services/WatchSummaryService.js';
+import { MarketChartService } from '../services/MarketChartService.js';
 
 export interface ApiServerDependencies {
   dataManager: DataManager;
@@ -17,15 +19,20 @@ export interface ApiServerDependencies {
   signalScanner: SignalScanner;
   configManager: ConfigManager;
   getConfig: () => SystemConfig;
+  // eslint-disable-next-line no-unused-vars
   updateConfig: (config: SystemConfig) => Promise<SystemConfig>;
   apiKey?: string;
 }
 
-function createWatchSummaryService(deps: ApiServerDependencies): WatchSummaryService {
+function createWatchSummaryService(
+  deps: ApiServerDependencies,
+  chartService: MarketChartService
+): WatchSummaryService {
   return new WatchSummaryService({
     dataManager: deps.dataManager,
     signalScanner: deps.signalScanner,
     positionMonitor: deps.positionMonitor,
+    chartService,
   });
 }
 
@@ -57,11 +64,47 @@ function requireApiKey(apiKey?: string) {
   };
 }
 
+function getRequestSymbol(req: Request): string {
+  const rawSymbol = Array.isArray(req.params.symbol) ? req.params.symbol[0] : req.params.symbol;
+  return decodeURIComponent(rawSymbol);
+}
+
+function getRequestInterval(req: Request, deps: ApiServerDependencies): string {
+  return typeof req.query.interval === 'string' ? req.query.interval : deps.getConfig().intervals[0] ?? '1h';
+}
+
+function getRequestLimit(req: Request, fallback: number = 180): number {
+  if (typeof req.query.limit !== 'string') {
+    return fallback;
+  }
+
+  const limit = Number(req.query.limit);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return fallback;
+  }
+
+  return limit;
+}
+
 export function createApiServer(deps: ApiServerDependencies): Express {
   const app = express();
   const macCalculator = new MACalculator();
-  const stateDetector = new MarketStateDetector(deps.getConfig().consolidationThreshold);
-  const watchSummaryService = createWatchSummaryService(deps);
+  const chartService = new MarketChartService({
+    dataManager: deps.dataManager,
+  });
+  const watchSummaryService = createWatchSummaryService(deps, chartService);
+
+  const buildWatchSummaryResponse = async (config: SystemConfig) => {
+    const summary = await watchSummaryService.build(config);
+    const agentSummary = await watchSummaryService.buildAgentSummary(summary, {
+      consolidationThreshold: config.consolidationThreshold,
+    });
+
+    return {
+      summary,
+      agentSummary,
+    };
+  };
 
   app.use(express.json());
   app.get('/health', (_req: Request, res: Response) => {
@@ -145,9 +188,7 @@ export function createApiServer(deps: ApiServerDependencies): Express {
 
   app.get('/api/watch-summary', async (_req: Request, res: Response) => {
     try {
-      const summary = await watchSummaryService.build(deps.getConfig());
-      const agentSummary = watchSummaryService.buildAgentSummary(summary);
-      return res.json({ summary, agentSummary });
+      return res.json(await buildWatchSummaryResponse(deps.getConfig()));
     } catch (error) {
       return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -169,9 +210,7 @@ export function createApiServer(deps: ApiServerDependencies): Express {
     try {
       const payload = (req.body ?? {}) as Partial<SystemConfig>;
       const runtimeConfig = buildRuntimeConfig(deps.getConfig(), payload);
-      const summary = await watchSummaryService.build(runtimeConfig);
-      const agentSummary = watchSummaryService.buildAgentSummary(summary);
-      return res.json({ summary, agentSummary });
+      return res.json(await buildWatchSummaryResponse(runtimeConfig));
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -181,8 +220,7 @@ export function createApiServer(deps: ApiServerDependencies): Express {
     try {
       const payload = ((req.body ?? {}) as { input?: Partial<SystemConfig> }).input ?? ((req.body ?? {}) as Partial<SystemConfig>);
       const runtimeConfig = buildRuntimeConfig(deps.getConfig(), payload);
-      const summary = await watchSummaryService.build(runtimeConfig);
-      const agentSummary = watchSummaryService.buildAgentSummary(summary);
+      const { summary, agentSummary } = await buildWatchSummaryResponse(runtimeConfig);
 
       return res.json({
         ok: true,
@@ -194,6 +232,51 @@ export function createApiServer(deps: ApiServerDependencies): Express {
         output: {
           summary,
           agentSummary,
+        },
+      });
+    } catch (error) {
+      return res.status(400).json({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post('/api/skills/market-chart', async (req: Request, res: Response) => {
+    try {
+      const payload = ((req.body ?? {}) as { input?: { symbol?: string; interval?: string; limit?: number } }).input
+        ?? ((req.body ?? {}) as { symbol?: string; interval?: string; limit?: number });
+      const symbol = payload.symbol?.trim();
+
+      if (!symbol) {
+        return res.status(400).json({
+          ok: false,
+          error: 'symbol is required',
+        });
+      }
+
+      const interval = payload.interval?.trim() || deps.getConfig().intervals[0] || '1h';
+      const limit = Number.isFinite(payload.limit) ? payload.limit : 180;
+      const analysis = await chartService.buildAnalysis(symbol, interval, {
+        limit,
+        consolidationThreshold: deps.getConfig().consolidationThreshold,
+      });
+      const svg = chartService.renderSvg(analysis);
+
+      return res.json({
+        ok: true,
+        skill: 'market-chart',
+        input: {
+          symbol,
+          interval,
+          limit: analysis.limit,
+        },
+        output: {
+          analysis,
+          chart: {
+            mimeType: 'image/svg+xml',
+            svg,
+          },
         },
       });
     } catch (error) {
@@ -229,12 +312,12 @@ export function createApiServer(deps: ApiServerDependencies): Express {
 
   app.get('/api/market/:symbol', async (req: Request, res: Response) => {
     try {
-      const rawSymbol = Array.isArray(req.params.symbol) ? req.params.symbol[0] : req.params.symbol;
-      const symbol = decodeURIComponent(rawSymbol);
-      const interval = typeof req.query.interval === 'string' ? req.query.interval : deps.getConfig().intervals[0] ?? '1h';
+      const symbol = getRequestSymbol(req);
+      const interval = getRequestInterval(req, deps);
       const klines = await deps.dataManager.getKLines(symbol, interval, 120);
       const latestKline = klines[klines.length - 1];
       const ma = macCalculator.calculateAll(klines);
+      const stateDetector = new MarketStateDetector(deps.getConfig().consolidationThreshold);
       const state = stateDetector.detectState(ma);
 
       return res.json({
@@ -245,6 +328,41 @@ export function createApiServer(deps: ApiServerDependencies): Express {
         ma,
         state,
       });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/market/:symbol/chart', async (req: Request, res: Response) => {
+    try {
+      const symbol = getRequestSymbol(req);
+      const interval = getRequestInterval(req, deps);
+      const analysis = await chartService.buildAnalysis(symbol, interval, {
+        limit: getRequestLimit(req),
+        consolidationThreshold: deps.getConfig().consolidationThreshold,
+      });
+
+      return res.json({
+        analysis,
+        svgUrl: `/api/market/${encodeURIComponent(symbol)}/chart.svg?interval=${encodeURIComponent(interval)}&limit=${analysis.limit}`,
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/market/:symbol/chart.svg', async (req: Request, res: Response) => {
+    try {
+      const symbol = getRequestSymbol(req);
+      const interval = getRequestInterval(req, deps);
+      const analysis = await chartService.buildAnalysis(symbol, interval, {
+        limit: getRequestLimit(req),
+        consolidationThreshold: deps.getConfig().consolidationThreshold,
+      });
+      const svg = chartService.renderSvg(analysis);
+
+      res.type('image/svg+xml');
+      return res.send(svg);
     } catch (error) {
       return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }

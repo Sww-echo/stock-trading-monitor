@@ -18,16 +18,26 @@ import {
 } from '../types/watch.js';
 import { AlertType } from '../types/alert.js';
 import { TradingAdvice } from '../types/advice.js';
+import type { MarketChartService } from './MarketChartService.js';
+import type { WatchAgentTopSignalChart } from '../types/watch.js';
 
 export interface WatchSummaryDependencies {
   dataManager: Pick<DataManager, 'isSymbolTradingTime' | 'getLatestPrice'>;
   signalScanner: Pick<SignalScanner, 'scanSymbol'>;
   positionMonitor: Pick<PositionMonitor, 'updatePositions' | 'getAllPositions'>;
+  chartService?: Pick<MarketChartService, 'buildAnalysis' | 'renderSvg'>;
+}
+
+export interface BuildAgentSummaryOptions {
+  consolidationThreshold?: number;
+  topSignalChartCount?: number;
+  topSignalChartLimit?: number;
 }
 
 export class WatchSummaryService {
   private readonly adviceService: AdviceService;
   private readonly historyStorage: WatchSummaryHistoryStorage;
+  private readonly chartService?: WatchSummaryDependencies['chartService'];
 
   constructor(
     private readonly deps: WatchSummaryDependencies,
@@ -36,6 +46,7 @@ export class WatchSummaryService {
   ) {
     this.adviceService = adviceService ?? new AdviceService();
     this.historyStorage = historyStorage;
+    this.chartService = deps.chartService;
   }
 
   async build(config: SystemConfig): Promise<WatchSummaryResult> {
@@ -150,9 +161,14 @@ export class WatchSummaryService {
     return snapshots.map((snapshot) => snapshot.summary);
   }
 
-  buildAgentSummary(summary: WatchSummaryResult): WatchAgentSummary {
-    const advices = summary.intervals.flatMap((item) => item.advices);
-    const counts = this.countActions(advices, summary);
+  async buildAgentSummary(
+    summary: WatchSummaryResult,
+    options?: BuildAgentSummaryOptions
+  ): Promise<WatchAgentSummary> {
+    const sortedAdvices = summary.intervals
+      .flatMap((item) => item.advices)
+      .sort((a, b) => this.calculatePriorityScore(b) - this.calculatePriorityScore(a));
+    const counts = this.countActions(sortedAdvices, summary);
     const skippedSymbols = this.collectSkippedSymbols(summary);
     const positionActions = this.buildPositionActions(summary.positions.alerts);
 
@@ -166,8 +182,7 @@ export class WatchSummaryService {
 
     const headline = `发现 ${counts.buy + counts.sell + counts.reduce} 个交易建议，${counts.positionAlerts} 个持仓提醒，${counts.errors} 个异常`;
 
-    const topSignals = [...advices]
-      .sort((a, b) => this.calculatePriorityScore(b) - this.calculatePriorityScore(a))
+    const topSignals = sortedAdvices
       .slice(0, 5)
       .map((advice) => ({
         symbol: advice.symbol,
@@ -178,12 +193,15 @@ export class WatchSummaryService {
         priorityScore: this.calculatePriorityScore(advice),
         reason: advice.reason,
       }));
+    const topSignalCharts = await this.buildTopSignalCharts(sortedAdvices, options);
 
     const nextHint = counts.errors > 0
       ? '建议先处理异常，再决定是否执行交易动作。'
       : counts.positionAlerts > 0
         ? '建议优先处理持仓提醒，再结合新信号决定是否调仓。'
-        : hasActionableAdvice
+        : hasActionableAdvice && topSignalCharts.length > 0
+          ? '建议结合附带图表确认密集区位置与最新买卖点，再决定是否执行。'
+          : hasActionableAdvice
           ? '可结合更高周期与风险参数进一步确认后执行。'
           : '当前无明确动作，建议继续按计划盯盘。';
 
@@ -195,10 +213,62 @@ export class WatchSummaryService {
         skippedSymbols: skippedSymbols.length,
       },
       topSignals,
+      topSignalCharts,
       positionActions,
       skippedSymbols,
       nextHint,
     };
+  }
+
+  private async buildTopSignalCharts(
+    advices: TradingAdvice[],
+    options?: BuildAgentSummaryOptions
+  ): Promise<WatchAgentTopSignalChart[]> {
+    if (!this.chartService) {
+      return [];
+    }
+
+    const chartService = this.chartService;
+    const chartCount = Math.max(0, options?.topSignalChartCount ?? 3);
+    const chartLimit = Math.max(120, options?.topSignalChartLimit ?? 180);
+    const consolidationThreshold = options?.consolidationThreshold;
+    const selectedAdvices = advices.slice(0, chartCount);
+
+    const chartResults = await Promise.all(selectedAdvices.map(async (advice) => {
+      try {
+        const analysis = await chartService.buildAnalysis(advice.symbol, advice.interval, {
+          limit: chartLimit,
+          consolidationThreshold,
+        });
+
+        if (!analysis) {
+          return null;
+        }
+
+        return {
+          symbol: advice.symbol,
+          interval: advice.interval,
+          action: advice.action,
+          adviceLevel: advice.adviceLevel,
+          confidence: advice.confidence,
+          priorityScore: this.calculatePriorityScore(advice),
+          reason: advice.reason,
+          analysis: {
+            ...analysis.summary,
+            recentSignals: analysis.signals.slice(-5),
+            recentZones: analysis.zones.slice(-3),
+          },
+          chart: {
+            mimeType: 'image/svg+xml' as const,
+            svg: chartService.renderSvg(analysis),
+          },
+        } satisfies WatchAgentTopSignalChart;
+      } catch {
+        return null;
+      }
+    }));
+
+    return chartResults.filter((item): item is WatchAgentTopSignalChart => item !== null);
   }
 
   private buildSymbolSummaries(intervals: WatchIntervalSummary[]): WatchSymbolSummary[] {

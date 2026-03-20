@@ -1,5 +1,6 @@
 import { AlertType } from './alert.js';
 import { AdviceAction, AdviceLevel, TradingAdvice } from './advice.js';
+import { ChartSignalMarker, ChartZone, MarketChartSummary } from './chart.js';
 import { PositionStatus } from './position.js';
 
 export interface WatchErrorItem {
@@ -89,6 +90,24 @@ export interface WatchAgentTopSignal {
   reason: string;
 }
 
+export interface WatchAgentTopSignalChart {
+  symbol: string;
+  interval: string;
+  action: AdviceAction;
+  adviceLevel: AdviceLevel;
+  confidence: number;
+  priorityScore: number;
+  reason: string;
+  analysis: MarketChartSummary & {
+    recentSignals: ChartSignalMarker[];
+    recentZones: ChartZone[];
+  };
+  chart: {
+    mimeType: 'image/svg+xml';
+    svg: string;
+  };
+}
+
 export type WatchAgentPositionActionType = 'stop_loss' | 'take_profit' | 'trend_reversal' | 'hold' | 'reduce' | 'exit';
 
 export interface WatchAgentPositionAction {
@@ -104,6 +123,7 @@ export interface WatchAgentSummary {
   headline: string;
   counts: WatchAgentSummaryCounts;
   topSignals: WatchAgentTopSignal[];
+  topSignalCharts: WatchAgentTopSignalChart[];
   positionActions: WatchAgentPositionAction[];
   skippedSymbols: string[];
   nextHint: string;

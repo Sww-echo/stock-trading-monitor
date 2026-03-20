@@ -26,6 +26,7 @@
   - 趋势中首次回踩 MA20
 - 支持持仓监控、止损止盈判断、趋势反转检测
 - 提供 REST API 供前端或外部调用
+- 提供 agent 可消费的图表分析 JSON 和 SVG 快照
 - 内置简易 Dashboard 页面用于查看配置、市场、持仓与信号
 
 ## 技术栈
@@ -230,6 +231,9 @@ npm run lint
 - `GET /api/watch-summary`：按当前配置生成一次汇总（返回 `summary` + `agentSummary`）
 - `POST /api/watch-summary/run`：按请求体临时覆盖 `symbols` / `intervals` 后生成汇总（返回 `summary` + `agentSummary`）
 - `GET /api/alerts`：提醒层占位接口
+- `GET /api/market/:symbol/chart`：返回指定标的的图表分析 JSON（K 线、MA/EMA、密集区、信号回放、SVG 地址）
+- `GET /api/market/:symbol/chart.svg`：返回可直接发送的 SVG 图表
+- `POST /api/skills/market-chart`：以 skill 包装格式返回图表分析与 SVG
 
 `agentSummary` 字段说明（面向 OpenClaw / agent）：
 
@@ -237,9 +241,47 @@ npm run lint
 - `headline`：一句话摘要（建议数、持仓提醒数、异常数）
 - `counts`：买卖建议、持仓提醒、异常、跳过标的等计数
 - `topSignals`：按置信度排序的前几个建议
+- `topSignalCharts`：前几个高优先级建议对应的图表附件（压缩分析摘要 + SVG）
 - `positionActions`：从持仓提醒提炼出的动作（如 `stop_loss` / `take_profit` / `trend_reversal`）
 - `skippedSymbols`：本次跳过的标的列表
 - `nextHint`：给 agent 的下一步建议
+
+### 图表分析接口（面向 agent）
+
+如果你希望 agent 不只是拿到文字建议，而是能拿到“哪里是均线密集区、哪里出现了策略信号”的可视化结果，可以直接调用：
+
+```bash
+curl "http://localhost:3000/api/market/BTC%2FUSDT/chart?interval=1h&limit=180"
+```
+
+返回结果包含：
+
+- `analysis.klines`：原始 K 线
+- `analysis.movingAverages`：每根 K 线对应的 MA20/60/120 和 EMA20/60/120
+- `analysis.density`：每根 K 线对应的均线密集状态、上下边界和宽度
+- `analysis.zones`：连续密集区区间
+- `analysis.signals`：按当前策略回放得到的历史买卖点
+- `svgUrl`：当前图表对应的 SVG 地址
+
+如果你想让 agent 直接拿到一张可以转发给你的图：
+
+```bash
+curl "http://localhost:3000/api/market/BTC%2FUSDT/chart.svg?interval=1h&limit=180"
+```
+
+如果你希望按 skill 风格统一返回图表数据和 SVG：
+
+```bash
+curl -X POST "http://localhost:3000/api/skills/market-chart" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "symbol": "BTC/USDT",
+      "interval": "1h",
+      "limit": 180
+    }
+  }'
+```
 
 ## OpenClaw Skill 对接
 

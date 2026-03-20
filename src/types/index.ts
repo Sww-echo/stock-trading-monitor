@@ -20,6 +20,9 @@ export * from './advice.js';
 // Watch types
 export * from './watch.js';
 
+// Chart types
+export * from './chart.js';
+
 // Alert types
 export * from './alert.js';
 
